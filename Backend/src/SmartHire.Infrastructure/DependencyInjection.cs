@@ -4,10 +4,13 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using SmartHire.Application.Abstractions.Persistence;
 using SmartHire.Application.Abstractions.Security;
+using SmartHire.Application.Abstractions.Serialization;
 using SmartHire.Application.Abstractions.Storage;
 using SmartHire.Infrastructure.Persistence;
+using SmartHire.Infrastructure.Persistence.Json;
 using SmartHire.Infrastructure.Persistence.Repositories;
 using SmartHire.Infrastructure.Security;
+using SmartHire.Infrastructure.Seeding;
 using SmartHire.Infrastructure.Storage;
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -38,7 +41,10 @@ public static class DependencyInjection {
         
         services.AddScoped<IUserRepository, UserRepository>();
         services.AddScoped<IRoleRepository, RoleRepository>();
+        services.AddScoped<IUserRoleRepository, UserRoleRepository>();
         services.AddScoped<IPasswordHasher, AspNetPasswordHasher>();
+        services.AddScoped<AdminAccountSeeder>();
+        services.AddScoped<CvDocumentFontSizeBackfiller>();
         services.AddScoped<IUnitOfWork, EfUnitOfWork>();
         
         services.AddSingleton<IAccessTokenGenerator, JwtAccessTokenGenerator>();
@@ -47,15 +53,28 @@ public static class DependencyInjection {
         services.AddSingleton<IRefreshTokenGenerator, RefreshTokenGenerator>();
         
         services.AddScoped<IMediaFileRepository, MediaFileRepository>();
+        services.AddScoped<ICompanyRepository, CompanyRepository>();
+        services.AddScoped<INotificationRepository, NotificationRepository>();
+        services.AddScoped<IIndustryCatalogRepository, IndustryCatalogRepository>();
+        services.AddScoped<ILocationCatalogRepository, LocationCatalogRepository>();
+        services.AddScoped<ISkillCatalogRepository, SkillCatalogRepository>();
+        services.AddScoped<IJobPostingRepository, JobPostingRepository>();
+        services.AddScoped<IJobApplicationRepository, JobApplicationRepository>();
 
+        
+        services.AddScoped<ICvTemplateRepository, CvTemplateRepository>();
+        services.AddScoped<ICvRepository, CvRepository>();
+        services.AddScoped<ICvVersionRepository, CvVersionRepository>();
+        services.AddSingleton<ICvDocumentHasher, CvDocumentHasher>();
+        
         // --- Cloudinary ---
         services.Configure<CloudinaryOptions>(configuration.GetSection(CloudinaryOptions.SectionName));
-
+        
         services.AddScoped<IFileStorageService, CloudinaryFileStorageService>();
         
         return services;
     }
-
+    
     public static IServiceCollection AddJwtBearerAuthentication(
         this IServiceCollection services,
         IConfiguration configuration) {
@@ -91,6 +110,17 @@ public static class DependencyInjection {
                     
                     NameClaimType = JwtRegisteredClaimNames.Name,
                     RoleClaimType = "role"
+                };
+
+                options.Events = new JwtBearerEvents {
+                    OnMessageReceived = context => {
+                        var accessToken = context.Request.Query["access_token"];
+                        var path = context.HttpContext.Request.Path;
+                        if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs")) {
+                            context.Token = accessToken;
+                        }
+                        return Task.CompletedTask;
+                    }
                 };
             });
         

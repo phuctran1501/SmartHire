@@ -1,10 +1,10 @@
-import Header from "@/components/Header";
+import Header from "@/components/common/Header";
 import { Outlet } from "react-router-dom";
 
 const BaseLayout = () => (
-  <div className="text-text-main font-sans">
+  <div className="font-sans text-text-main">
     <Header />
-    <main className=" bg-bg-white-blue">
+    <main className="bg-bg-white-blue">
       <Outlet />
     </main>
   </div>

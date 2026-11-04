@@ -8,6 +8,15 @@
     <PackageReference Include="MediatR" Version="14.2.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="Features\Account\Commands\" />
+    <Folder Include="Features\Account\Queries\" />
+    <Folder Include="Features\CvTemplate\Commands\" />
+    <Folder Include="Features\LocationCatalog\Commands\" />
+    <Folder Include="Features\LocationCatalog\DTOs\" />
+    <Folder Include="Features\LocationCatalog\Queries\" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>

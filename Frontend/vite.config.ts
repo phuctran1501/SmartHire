@@ -7,8 +7,19 @@ import path from "path";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "./src"),
-    },
+    alias: [
+      {
+        find: /^src\/components\/echarts-(.*)$/,
+        replacement: `${path.resolve(__dirname, "./src/components/evilcharts/ui/echarts-$1")}`,
+      },
+      {
+        find: /^src\//,
+        replacement: `${path.resolve(__dirname, "./src")}/`,
+      },
+      {
+        find: "@",
+        replacement: path.resolve(__dirname, "./src"),
+      },
+    ],
   },
 });

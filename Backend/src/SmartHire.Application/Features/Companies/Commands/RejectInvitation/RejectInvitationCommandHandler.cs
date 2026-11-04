@@ -1,0 +1,103 @@
+using System.Text.Json;
+using MediatR;
+using SmartHire.Application.Abstractions.Notifications;
+using SmartHire.Application.Abstractions.Persistence;
+using SmartHire.Application.Abstractions.Security;
+using SmartHire.Application.Features.Companies.Exceptions;
+using SmartHire.Application.Features.Notifications.Mapping;
+using SmartHire.Domain.Entities;
+using SmartHire.Domain.Enums;
+
+namespace SmartHire.Application.Features.Companies.Commands.RejectInvitation;
+
+public sealed class RejectInvitationCommandHandler : IRequestHandler<RejectInvitationCommand> {
+    private readonly ICurrentUser _currentUser;
+    private readonly ICompanyRepository _companyRepository;
+    private readonly IUserRepository _userRepository;
+    private readonly INotificationRepository _notificationRepository;
+    private readonly INotificationDispatcher? _notificationDispatcher;
+    private readonly IUnitOfWork _unitOfWork;
+
+    public RejectInvitationCommandHandler(
+        ICurrentUser currentUser,
+        ICompanyRepository companyRepository,
+        IUserRepository userRepository,
+        INotificationRepository notificationRepository,
+        IUnitOfWork unitOfWork,
+        INotificationDispatcher? notificationDispatcher = null) {
+        _currentUser = currentUser;
+        _companyRepository = companyRepository;
+        _userRepository = userRepository;
+        _notificationRepository = notificationRepository;
+        _unitOfWork = unitOfWork;
+        _notificationDispatcher = notificationDispatcher;
+    }
+
+    public async Task Handle(RejectInvitationCommand request, CancellationToken cancellationToken) {
+        if (_currentUser.UserId is not Guid userId) {
+            throw CompanyExceptions.InvalidAccessToken();
+        }
+
+        var invitation = await _companyRepository.GetInvitationByIdAsync(request.InvitationId, cancellationToken);
+        if (invitation is null) {
+            throw CompanyExceptions.CompanyInvitationNotFound();
+        }
+
+        if (invitation.InviteeId != userId) {
+            throw CompanyExceptions.CompanyForbidden("You are not the invitee of this invitation.");
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        if (invitation.Status != CompanyInvitationStatus.Pending) {
+            throw CompanyExceptions.CompanyInvitationAlreadyProcessed();
+        }
+
+        // Trường hợp hết hạn: cập nhật trạng thái Expired ngay lập tức 
+        if (invitation.ExpiresAt <= now) {
+            invitation.Expire();
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+            throw CompanyExceptions.CompanyInvitationExpired();
+        }
+
+        // Đọc dữ liệu phụ trợ trước khi vào transaction
+        var company = await _companyRepository.GetByIdAsync(invitation.CompanyId, cancellationToken);
+        var companyName = company?.Name ?? "công ty";
+        var inviteeUser = await _userRepository.GetByIdAsync(userId, cancellationToken);
+        var inviteeName = inviteeUser?.FullName ?? "Ứng viên";
+
+        // Reject invitation + tạo notification trong cùng 1 transaction
+        var notification = await _unitOfWork.ExecuteInTransactionAsync(async cancellationToken => {
+            invitation.Reject();
+
+            var payloadObj = new {
+                company_id = invitation.CompanyId,
+                company_name = companyName,
+                invitation_status = "Rejected"
+            };
+            var payloadJson = JsonSerializer.Serialize(payloadObj);
+
+            var notification = Notification.Create(
+                recipientId: invitation.InviterId,
+                type: NotificationType.CompanyInvitation,
+                title: "Lời mời bị từ chối",
+                body: $"{inviteeName} đã từ chối lời mời gia nhập công ty {companyName}.",
+                payload: payloadJson,
+                resourceType: "CompanyInvitation",
+                resourceId: invitation.Id,
+                now: now);
+
+            await _notificationRepository.AddAsync(notification, cancellationToken);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            return notification;
+        }, cancellationToken);
+
+        if (_notificationDispatcher is not null) {
+            try {
+                var notificationDto = NotificationResultMapper.ToDto(notification);
+                await _notificationDispatcher.DispatchAsync(notification.RecipientId, notificationDto, cancellationToken);
+            } catch {
+            }
+        }
+    }
+}

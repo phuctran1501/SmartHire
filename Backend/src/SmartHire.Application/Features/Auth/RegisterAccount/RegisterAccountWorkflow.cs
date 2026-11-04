@@ -28,7 +28,9 @@ public sealed class RegisterAccountWorkflow(
             throw new AppException(
                 AppErrorKind.Conflict,
                 AuthErrorCodes.EmailAlreadyExists,
-                "Email already exists.");
+                "Email already exists.",
+                [new AppErrorDetail("email", ErrorDetailReasons.AlreadyExists,
+                    "This email address is already associated with an account.")]);
         }
         
         if (input.Phone is not null &&
@@ -36,7 +38,9 @@ public sealed class RegisterAccountWorkflow(
             throw new AppException(
                 AppErrorKind.Conflict,
                 AuthErrorCodes.PhoneAlreadyExists,
-                "Phone number already exists.");
+                "Phone number already exists.",
+                [new AppErrorDetail("phone", ErrorDetailReasons.AlreadyExists,
+                    "This phone number is already associated with an account.")]);
         }
         
         var role = await roles.GetByNameAsync(roleName, cancellationToken);
@@ -54,7 +58,9 @@ public sealed class RegisterAccountWorkflow(
             throw new AppException(
                 AppErrorKind.NotFound,
                 roleErrorCode,
-                $"Required role '{roleName}' was not found.");
+                $"Required role '{roleName}' was not found.",
+                [new AppErrorDetail("role", ErrorDetailReasons.NotFound,
+                    $"The required role '{roleName}' is not configured.")]);
         }
         
         var user = User.Create(
@@ -68,10 +74,10 @@ public sealed class RegisterAccountWorkflow(
             return await unitOfWork.ExecuteInTransactionAsync(
                 async transactionToken => {
                     await users.AddAsync(user, transactionToken);
-                    await users.SaveChangeAsync(transactionToken);
+                    await unitOfWork.SaveChangesAsync(transactionToken);
                     
                     user.AssignRole(role);
-                    await users.SaveChangeAsync(transactionToken);
+                    await unitOfWork.SaveChangesAsync(transactionToken);
                     
                     return new RegisterAccountResult(
                         user.Id,
@@ -84,19 +90,23 @@ public sealed class RegisterAccountWorkflow(
                 },
                 cancellationToken);
         }
-        catch (Exception ex) when (TryGetPostgresUniqueViolation(ex, out var constraintName)) {
-            if (string.Equals(constraintName, "ix_users_email", StringComparison.OrdinalIgnoreCase)) {
+        catch (PersistenceUniqueConstraintViolationException exception) {
+            if (string.Equals(exception.ConstraintName, "ix_users_email", StringComparison.OrdinalIgnoreCase)) {
                 throw new AppException(
                     AppErrorKind.Conflict,
                     AuthErrorCodes.EmailAlreadyExists,
-                    "Email already exists.");
+                    "Email already exists.",
+                    [new AppErrorDetail("email", ErrorDetailReasons.AlreadyExists,
+                        "This email address is already associated with an account.")]);
             }
             
-            if (string.Equals(constraintName, "ix_users_phone", StringComparison.OrdinalIgnoreCase)) {
+            if (string.Equals(exception.ConstraintName, "ix_users_phone", StringComparison.OrdinalIgnoreCase)) {
                 throw new AppException(
                     AppErrorKind.Conflict,
                     AuthErrorCodes.PhoneAlreadyExists,
-                    "Phone number already exists.");
+                    "Phone number already exists.",
+                    [new AppErrorDetail("phone", ErrorDetailReasons.AlreadyExists,
+                        "This phone number is already associated with an account.")]);
             }
             
             // Nếu là unique constraint khác không dự đoán được, throw lại lỗi gốc
@@ -104,25 +114,4 @@ public sealed class RegisterAccountWorkflow(
         }
     }
     
-    private static bool TryGetPostgresUniqueViolation(Exception exception, out string? constraintName) {
-        constraintName = null;
-        
-        // Duyệt qua chuỗi inner exceptions
-        for (var current = exception; current is not null; current = current.InnerException) {
-            // Kiểm tra xem exception có thuộc tính SqlState / ConstraintName của Npgsql.PostgresException không
-            var type = current.GetType();
-            if (type.Name == "PostgresException") {
-                var sqlStateProp = type.GetProperty("SqlState");
-                var constraintNameProp = type.GetProperty("ConstraintName");
-                var sqlState = sqlStateProp?.GetValue(current) as string;
-                if (sqlState == "23505") {
-                    // Mã lỗi unique_violation trong PostgreSQL
-                    constraintName = constraintNameProp?.GetValue(current) as string;
-                    return true;
-                }
-            }
-        }
-        
-        return false;
-    }
 }

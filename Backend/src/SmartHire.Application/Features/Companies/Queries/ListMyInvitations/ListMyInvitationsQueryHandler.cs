@@ -1,0 +1,57 @@
+using MediatR;
+using SmartHire.Application.Abstractions.Persistence;
+using SmartHire.Application.Abstractions.Security;
+using SmartHire.Application.Common.Errors;
+using SmartHire.Application.Common.Pagination;
+using SmartHire.Application.Common.Validation;
+using SmartHire.Application.Features.Companies.DTOs;
+using SmartHire.Application.Features.Companies.Exceptions;
+using SmartHire.Application.Features.Companies.Mapping;
+using SmartHire.Domain.Enums;
+
+namespace SmartHire.Application.Features.Companies.Queries.ListMyInvitations;
+
+public sealed class ListMyInvitationsQueryHandler : IRequestHandler<ListMyInvitationsQuery, (IReadOnlyList<CompanyInvitationResult> Items, int TotalCount)> {
+    private readonly ICurrentUser _currentUser;
+    private readonly ICompanyRepository _companyRepository;
+
+    public ListMyInvitationsQueryHandler(
+        ICurrentUser currentUser,
+        ICompanyRepository companyRepository) {
+        _currentUser = currentUser;
+        _companyRepository = companyRepository;
+    }
+
+    public async Task<(IReadOnlyList<CompanyInvitationResult> Items, int TotalCount)> Handle(ListMyInvitationsQuery request, CancellationToken cancellationToken) {
+        if (_currentUser.UserId is not Guid userId) {
+            throw CompanyExceptions.InvalidAccessToken();
+        }
+
+        CompanyInvitationStatus? filterStatus = null;
+        if (!string.IsNullOrWhiteSpace(request.Status)) {
+            if (Enum.TryParse<CompanyInvitationStatus>(request.Status, true, out var parsedStatus)) {
+                filterStatus = parsedStatus;
+            } else {
+                throw CompanyExceptions.Validation(
+                    "Invalid invitation status.",
+                    [new AppErrorDetail("status", ValidationReasons.InvalidFormat,
+                        $"Status must be one of: {string.Join(", ", Enum.GetNames<CompanyInvitationStatus>())}.")]);
+            }
+        }
+
+        var pagination = request.Pagination ?? new PaginationParams();
+        var page = PagedListQueryValidator.ValidatePage(pagination.Page);
+        var pageSize = PagedListQueryValidator.ValidatePageSize(pagination.PageSize);
+
+        var (items, totalCount) = await _companyRepository.GetMyInvitationsPagedAsync(
+            userId,
+            filterStatus,
+            page,
+            pageSize,
+            cancellationToken);
+
+        var results = items.Select(i => CompanyResultMapper.ToCompanyInvitationResult(i, i.Company)).ToList();
+
+        return (results, totalCount);
+    }
+}

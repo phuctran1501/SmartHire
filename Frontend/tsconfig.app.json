@@ -6,7 +6,9 @@
     "module": "esnext",
     "types": ["vite/client"],
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "src/*": ["./src/*"],
+      "src/components/echarts-*": ["./src/components/evilcharts/ui/echarts-*"]
     },
     "allowArbitraryExtensions": true,
     "skipLibCheck": true,

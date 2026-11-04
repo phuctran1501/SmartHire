@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
+using NpgsqlTypes;
 using Pgvector;
 using SmartHire.Infrastructure.Persistence;
 
@@ -21,6 +22,7 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
                 .HasAnnotation("ProductVersion", "10.0.12")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
+            NpgsqlModelBuilderExtensions.HasPostgresExtension(modelBuilder, "pg_trgm");
             NpgsqlModelBuilderExtensions.HasPostgresExtension(modelBuilder, "vector");
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
@@ -151,6 +153,12 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(30)")
                         .HasColumnName("phone");
 
+                    b.Property<NpgsqlTsVector>("SearchVector")
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("tsvector")
+                        .HasColumnName("search_vector")
+                        .HasComputedColumnSql("to_tsvector('simple'::regconfig, coalesce(name, ''::text))", true);
+
                     b.Property<string>("TaxCode")
                         .IsRequired()
                         .HasMaxLength(20)
@@ -181,6 +189,17 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
                     b.HasIndex("LogoFileId")
                         .IsUnique()
                         .HasDatabaseName("ix_companies_logo_file_id");
+
+                    b.HasIndex("Name")
+                        .HasDatabaseName("ix_companies_name");
+
+                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("Name"), "GIN");
+                    NpgsqlIndexBuilderExtensions.HasOperators(b.HasIndex("Name"), new[] { "gin_trgm_ops" });
+
+                    b.HasIndex("SearchVector")
+                        .HasDatabaseName("ix_companies_search_vector");
+
+                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("SearchVector"), "GIN");
 
                     b.HasIndex("TaxCode")
                         .IsUnique()
@@ -365,9 +384,18 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
                         .HasColumnType("jsonb")
                         .HasColumnName("content");
 
+                    b.Property<string>("ContentHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("content_hash");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deleted_at");
 
                     b.Property<bool>("IsPublic")
                         .HasColumnType("boolean")
@@ -384,10 +412,14 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
                         .HasColumnType("jsonb")
                         .HasColumnName("layout");
 
-                    b.Property<string>("Presentation")
-                        .IsRequired()
-                        .HasColumnType("jsonb")
-                        .HasColumnName("presentation");
+                    b.Property<string>("LayoutHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("layout_hash");
+
+                    b.Property<Guid?>("PreviewFileId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("preview_file_id");
 
                     b.Property<Guid>("TemplateId")
                         .HasColumnType("uuid")
@@ -400,6 +432,7 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
                         .HasColumnName("title");
 
                     b.Property<DateTimeOffset>("UpdatedAt")
+                        .IsConcurrencyToken()
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at");
 
@@ -408,6 +441,10 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("CandidateId")
                         .HasDatabaseName("ix_cvs_candidate_id");
+
+                    b.HasIndex("PreviewFileId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_cvs_preview_file_id");
 
                     b.HasIndex("TemplateId")
                         .HasDatabaseName("ix_cvs_template_id");
@@ -479,11 +516,6 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasColumnType("jsonb")
                         .HasColumnName("default_layout");
-
-                    b.Property<string>("DefaultPresentation")
-                        .IsRequired()
-                        .HasColumnType("jsonb")
-                        .HasColumnName("default_presentation");
 
                     b.Property<string>("Description")
                         .HasColumnType("text")
@@ -565,10 +597,9 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
                         .HasColumnType("jsonb")
                         .HasColumnName("layout");
 
-                    b.Property<string>("Presentation")
-                        .IsRequired()
-                        .HasColumnType("jsonb")
-                        .HasColumnName("presentation");
+                    b.Property<Guid?>("PreviewFileId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("preview_file_id");
 
                     b.Property<Guid>("TemplateId")
                         .HasColumnType("uuid")
@@ -580,6 +611,10 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id")
                         .HasName("pk_cv_versions");
+
+                    b.HasIndex("PreviewFileId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_cv_versions_preview_file_id");
 
                     b.HasIndex("TemplateId")
                         .HasDatabaseName("ix_cv_versions_template_id");
@@ -686,6 +721,7 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
                         .HasColumnName("status");
 
                     b.Property<DateTimeOffset>("UpdatedAt")
+                        .IsConcurrencyToken()
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at");
 
@@ -696,9 +732,6 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
                     b.HasKey("Id")
                         .HasName("pk_applications");
 
-                    b.HasIndex("CandidateId")
-                        .HasDatabaseName("ix_applications_candidate_id");
-
                     b.HasIndex("CvVersionId")
                         .HasDatabaseName("ix_applications_cv_version_id");
 
@@ -708,6 +741,10 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
                     b.HasIndex("UploadedCvFileId")
                         .IsUnique()
                         .HasDatabaseName("ix_applications_uploaded_cv_file_id");
+
+                    b.HasIndex("CandidateId", "JobId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_applications_candidate_id_job_id");
 
                     b.ToTable("applications", null, t =>
                         {
@@ -847,6 +884,12 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("salary_negotiable");
 
+                    b.Property<NpgsqlTsVector>("SearchVector")
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("tsvector")
+                        .HasColumnName("search_vector")
+                        .HasComputedColumnSql("to_tsvector('simple'::regconfig, coalesce(title, ''::text))", true);
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasColumnType("text")
@@ -879,6 +922,20 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("ProvinceId")
                         .HasDatabaseName("ix_job_postings_province_id");
+
+                    b.HasIndex("SearchVector")
+                        .HasDatabaseName("ix_job_postings_search_vector");
+
+                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("SearchVector"), "GIN");
+
+                    b.HasIndex("Status")
+                        .HasDatabaseName("ix_job_postings_status");
+
+                    b.HasIndex("Title")
+                        .HasDatabaseName("ix_job_postings_title");
+
+                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("Title"), "GIN");
+                    NpgsqlIndexBuilderExtensions.HasOperators(b.HasIndex("Title"), new[] { "gin_trgm_ops" });
 
                     b.HasIndex("WardId")
                         .HasDatabaseName("ix_job_postings_ward_id");
@@ -957,6 +1014,10 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
+                    b.Property<DateTimeOffset?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deleted_at");
+
                     b.Property<string>("FileName")
                         .IsRequired()
                         .HasMaxLength(255)
@@ -998,6 +1059,78 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
                     b.ToTable("media_files", (string)null);
                 });
 
+            modelBuilder.Entity("SmartHire.Domain.Entities.Notification", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("body");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset?>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<string>("Payload")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("payload");
+
+                    b.Property<DateTimeOffset?>("ReadAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("read_at");
+
+                    b.Property<DateTimeOffset?>("RealtimeDispatchedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("realtime_dispatched_at");
+
+                    b.Property<Guid>("RecipientId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("recipient_id");
+
+                    b.Property<Guid?>("ResourceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("resource_id");
+
+                    b.Property<string>("ResourceType")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("resource_type");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("title");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("type");
+
+                    b.HasKey("Id")
+                        .HasName("pk_notifications");
+
+                    b.HasIndex("ExpiresAt")
+                        .HasDatabaseName("ix_notifications_expires_at");
+
+                    b.HasIndex("RecipientId", "ReadAt")
+                        .HasDatabaseName("ix_notifications_recipient_id_read_at");
+
+                    b.HasIndex("RecipientId", "Type", "CreatedAt")
+                        .HasDatabaseName("ix_notifications_recipient_id_type_created_at");
+
+                    b.ToTable("notifications", (string)null);
+                });
+
             modelBuilder.Entity("SmartHire.Domain.Entities.Province", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1005,6 +1138,10 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id")
                         .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<bool>("IsCentrallyGoverned")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_centrally_governed");
 
                     b.Property<string>("Name")
                         .IsRequired()
@@ -1217,6 +1354,10 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
                         .HasColumnName("id")
                         .HasDefaultValueSql("gen_random_uuid()");
 
+                    b.Property<bool>("IsCommune")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_commune");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(150)
@@ -1407,6 +1548,12 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasConstraintName("fk_cvs_users_candidate_id");
 
+                    b.HasOne("SmartHire.Domain.Entities.MediaFile", "PreviewFile")
+                        .WithOne("PreviewCv")
+                        .HasForeignKey("SmartHire.Domain.Entities.Cv", "PreviewFileId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_cvs_media_files_preview_file_id");
+
                     b.HasOne("SmartHire.Domain.Entities.CvTemplate", "Template")
                         .WithMany("Cvs")
                         .HasForeignKey("TemplateId")
@@ -1415,6 +1562,8 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
                         .HasConstraintName("fk_cvs_cv_templates_template_id");
 
                     b.Navigation("Candidate");
+
+                    b.Navigation("PreviewFile");
 
                     b.Navigation("Template");
                 });
@@ -1452,6 +1601,12 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasConstraintName("fk_cv_versions_cvs_cv_id");
 
+                    b.HasOne("SmartHire.Domain.Entities.MediaFile", "PreviewFile")
+                        .WithMany()
+                        .HasForeignKey("PreviewFileId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_cv_versions_media_files_preview_file_id");
+
                     b.HasOne("SmartHire.Domain.Entities.CvTemplate", "Template")
                         .WithMany("CvVersions")
                         .HasForeignKey("TemplateId")
@@ -1460,6 +1615,8 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
                         .HasConstraintName("fk_cv_versions_cv_templates_template_id");
 
                     b.Navigation("Cv");
+
+                    b.Navigation("PreviewFile");
 
                     b.Navigation("Template");
                 });
@@ -1639,6 +1796,18 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
                     b.Navigation("Owner");
                 });
 
+            modelBuilder.Entity("SmartHire.Domain.Entities.Notification", b =>
+                {
+                    b.HasOne("SmartHire.Domain.Entities.User", "Recipient")
+                        .WithMany()
+                        .HasForeignKey("RecipientId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_notifications_users_recipient_id");
+
+                    b.Navigation("Recipient");
+                });
+
             modelBuilder.Entity("SmartHire.Domain.Entities.RefreshToken", b =>
                 {
                     b.HasOne("SmartHire.Domain.Entities.User", "User")
@@ -1775,6 +1944,8 @@ namespace SmartHire.Infrastructure.Persistence.Migrations
                     b.Navigation("CvTemplate");
 
                     b.Navigation("LogoCompany");
+
+                    b.Navigation("PreviewCv");
 
                     b.Navigation("UploadedCvApplication");
                 });

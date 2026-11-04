@@ -1,13 +1,13 @@
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using SmartHire.Api.Factories;
-using SmartHire.Application.Common.Errors;
-using SmartHire.Application.Common.Exceptions;
 using SmartHire.Application.Common.Security;
 using SmartHire.Application.Features.Media.Commands.DeleteMediaFile;
 using SmartHire.Application.Features.Media.Commands.UploadImage;
 using SmartHire.Application.Features.Media.Commands.UploadPdf;
+using SmartHire.Application.Features.Media.Exceptions;
 using SmartHire.Application.Features.Media.Queries.GetMediaFile;
 
 namespace SmartHire.Api.Controllers;
@@ -28,16 +28,14 @@ public sealed class MediaController : ControllerBase {
         _responseFactory = responseFactory;
     }
 
+    // Upload ảnh
     [HttpPost("upload/image")]
+    [EnableRateLimiting("media-upload")]
     public async Task<IActionResult> UploadImage(
         IFormFile? file,
         CancellationToken cancellationToken) {
         if (file is null || file.Length == 0) {
-            throw new AppException(
-                AppErrorKind.BadRequest,
-                CommonErrorCodes.ValidationError,
-                "Image file is required.",
-                [new AppErrorDetail("file", ValidationReasons.Required, "A file must be provided.")]);
+            throw MediaExceptions.FileRequired("Image file");
         }
 
         await using var stream = file.OpenReadStream();
@@ -53,16 +51,14 @@ public sealed class MediaController : ControllerBase {
         return StatusCode(StatusCodes.Status201Created, _responseFactory.Success(result));
     }
 
+    // Upload pdf
     [HttpPost("upload/pdf")]
+    [EnableRateLimiting("media-upload")]
     public async Task<IActionResult> UploadPdf(
         IFormFile? file,
         CancellationToken cancellationToken) {
         if (file is null || file.Length == 0) {
-            throw new AppException(
-                AppErrorKind.BadRequest,
-                CommonErrorCodes.ValidationError,
-                "PDF file is required.",
-                [new AppErrorDetail("file", ValidationReasons.Required, "A file must be provided.")]);
+            throw MediaExceptions.FileRequired("PDF file");
         }
 
         await using var stream = file.OpenReadStream();
@@ -78,7 +74,8 @@ public sealed class MediaController : ControllerBase {
         return StatusCode(StatusCodes.Status201Created, _responseFactory.Success(result));
     }
 
-    [HttpGet("{id:guid}")]
+    // Lấy thông tin file media
+    [HttpGet("{id}")]
     public async Task<IActionResult> GetMediaFile(
         Guid id,
         CancellationToken cancellationToken) {
@@ -89,7 +86,8 @@ public sealed class MediaController : ControllerBase {
         return Ok(_responseFactory.Success(result));
     }
 
-    [HttpDelete("{id:guid}")]
+    // Xóa file media
+    [HttpDelete("{id}")]
     public async Task<IActionResult> DeleteMediaFile(
         Guid id,
         CancellationToken cancellationToken) {

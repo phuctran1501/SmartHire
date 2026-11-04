@@ -29,15 +29,16 @@ public sealed class UserRepository : IUserRepository {
     public async Task AddAsync(User user, CancellationToken cancellationToken) {
         await _dbContext.Users.AddAsync(user, cancellationToken);
     }
-    
-    public Task SaveChangeAsync(CancellationToken cancellationToken) {
-        return _dbContext.SaveChangesAsync(cancellationToken);
-    }
+
+    public Task SaveChangeAsync(CancellationToken cancellationToken) =>
+        _dbContext.SaveChangesAsync(cancellationToken);
     
     public async Task<User?> GetByEmailWithRolesAsync(string normalizedEmail, CancellationToken cancellationToken) {
         return await _dbContext.Users
+            .AsNoTracking()
             .Include(user => user.UserRoles)
             .ThenInclude(userRole => userRole.Role)
+            .Include(user => user.AvatarFile)
             .SingleOrDefaultAsync(
                 user => user.Email == normalizedEmail,
                 cancellationToken

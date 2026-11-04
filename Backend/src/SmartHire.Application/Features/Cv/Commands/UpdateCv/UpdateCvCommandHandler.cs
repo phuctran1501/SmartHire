@@ -1,0 +1,309 @@
+using MediatR;
+using SmartHire.Application.Abstractions.BackgroundJobs;
+using SmartHire.Application.Abstractions.Persistence;
+using SmartHire.Application.Abstractions.Serialization;
+using SmartHire.Application.Abstractions.Security;
+using SmartHire.Application.Common.Errors;
+using SmartHire.Application.Common.Exceptions;
+using SmartHire.Application.Common.Security;
+using SmartHire.Application.Features.Cv.DTOs;
+using SmartHire.Domain.Entities;
+using SmartHire.Application.Features.Cv.Exceptions;
+using SmartHire.Application.Features.Cv.Mapping;
+using SmartHire.Application.Features.Media.Jobs.DeleteMediaFile;
+
+namespace SmartHire.Application.Features.Cv.Commands.UpdateCv;
+
+public sealed class UpdateCvCommandHandler : IRequestHandler<UpdateCvCommand, CvResult> {
+    private readonly ICurrentUser _currentUser;
+    private readonly ICvRepository _cvRepository;
+    private readonly IUnitOfWork _unitOfWork;
+    private readonly ICvVersionRepository _cvVersionRepository;
+    private readonly ICvDocumentHasher _cvDocumentHasher;
+    private readonly IMediaFileRepository _mediaFileRepository;
+    private readonly IBackgroundJobScheduler _backgroundJobScheduler;
+    
+    public UpdateCvCommandHandler(
+        ICurrentUser currentUser,
+        ICvRepository cvRepository,
+        ICvVersionRepository cvVersionRepository,
+        IUnitOfWork unitOfWork,
+        ICvDocumentHasher cvDocumentHasher,
+        IMediaFileRepository mediaFileRepository,
+        IBackgroundJobScheduler backgroundJobScheduler
+    ) {
+        _currentUser = currentUser;
+        _cvRepository = cvRepository;
+        _cvVersionRepository = cvVersionRepository;
+        _unitOfWork = unitOfWork;
+        _cvDocumentHasher = cvDocumentHasher;
+        _mediaFileRepository = mediaFileRepository;
+        _backgroundJobScheduler = backgroundJobScheduler;
+    }
+    
+    public async Task<CvResult> Handle(
+        UpdateCvCommand request,
+        CancellationToken cancellationToken) {
+        var validated = UpdateCvCommandValidator.Validate(request);
+        var candidateId = GetCandidateId();
+        
+        var cv = await _cvRepository.GetForUpdateByIdAsync(validated.Id, cancellationToken);
+        if (cv is null) {
+            throw CvExceptions.CvNotFound();
+        }
+        
+        if (cv.CandidateId != candidateId) {
+            throw CvExceptions.CvNotOwned("update");
+        }
+
+        var oldPreviewFileId = cv.PreviewFileId;
+
+        var content = validated.ContentProvided ? validated.Content! : cv.Content;
+        var layout = validated.LayoutProvided ? validated.Layout! : cv.Layout;
+        
+        var now = DateTimeOffset.UtcNow;
+        if (now <= cv.UpdatedAt) {
+            now = cv.UpdatedAt.AddTicks(TimeSpan.TicksPerMicrosecond);
+        }
+        
+        if (content.Metadata is null) {
+            throw CvExceptions.Validation(
+                "CV documents contain invalid fields.",
+                [new AppErrorDetail("content.metadata", ValidationReasons.Required, "Content metadata is required.")]);
+        }
+        
+        var language = validated.LanguageProvided
+            ? validated.ParsedLanguage!.Value
+            : validated.ContentProvided
+                ? content.Metadata.Language
+                : cv.Language;
+
+        content = content with {
+            Metadata = content.Metadata with { Language = language }
+        };
+        
+        if (validated.ContentProvided || validated.LayoutProvided) {
+            var docErrors = CvDocumentUpdateValidator.Validate(content, layout);
+            if (docErrors.Count > 0) {
+                throw CvExceptions.Validation("CV documents contain invalid fields.", docErrors);
+            }
+        }
+        
+        var isPublic = cv.IsPublic;
+        if (validated.IsPublicProvided) {
+            isPublic = validated.IsPublic!.Value;
+        }
+        
+        var currentHashes = _cvDocumentHasher.Calculate(cv.Content, cv.Layout);
+        var proposedHashes = _cvDocumentHasher.Calculate(content, layout);
+
+        var currentContentHash = currentHashes.ContentHash;
+        var currentLayoutHash = currentHashes.LayoutHash;
+
+        var contentComparisonRequired = validated.ContentProvided || language != cv.Language;
+        var layoutComparisonRequired = validated.LayoutProvided;
+
+        var contentChanged = contentComparisonRequired && !string.Equals(
+            proposedHashes.ContentHash,
+            currentContentHash,
+            StringComparison.Ordinal);
+        var layoutChanged = layoutComparisonRequired && !string.Equals(
+            proposedHashes.LayoutHash,
+            currentLayoutHash,
+            StringComparison.Ordinal);
+        var isVersioningRequired = contentChanged || layoutChanged;
+
+        // Validate preview file requirements based on whether versioning is required
+        MediaFile? newPreviewFile = null;
+        if (isVersioningRequired) {
+            if (!validated.PreviewFileIdProvided || !validated.PreviewFileId.HasValue) {
+                throw CvExceptions.Validation(
+                    "A valid preview file is required when updating CV content.",
+                    [new AppErrorDetail("previewFileId", ValidationReasons.Required, "Preview file is required when a new CV version is created.")]);
+            }
+
+            newPreviewFile = await _mediaFileRepository.GetByIdAsync(
+                validated.PreviewFileId.Value, cancellationToken);
+
+            if (newPreviewFile is null) {
+                throw CvExceptions.MediaFileNotFound("previewFileId", validated.PreviewFileId.Value);
+            }
+
+            if (newPreviewFile.OwnerId != candidateId) {
+                throw CvExceptions.MediaFileForbidden("previewFileId");
+            }
+
+            var isVersionInUse = await _cvVersionRepository.IsPreviewFileInUseAsync(
+                validated.PreviewFileId.Value,
+                cancellationToken);
+
+            if (isVersionInUse) {
+                throw CvExceptions.PreviewFileConflict("previewFileId");
+            }
+
+            var isCvInUse = await _cvRepository.IsPreviewFileInUseAsync(
+                validated.PreviewFileId.Value,
+                cv.Id,
+                cancellationToken);
+
+            if (isCvInUse) {
+                throw CvExceptions.PreviewFileConflict("previewFileId");
+            }
+        }
+        else if (validated.PreviewFileIdProvided && validated.PreviewFileId.HasValue) {
+            newPreviewFile = await _mediaFileRepository.GetByIdAsync(
+                validated.PreviewFileId.Value, cancellationToken);
+
+            if (newPreviewFile is null) {
+                throw CvExceptions.MediaFileNotFound("previewFileId", validated.PreviewFileId.Value);
+            }
+
+            if (newPreviewFile.OwnerId != candidateId) {
+                throw CvExceptions.MediaFileForbidden("previewFileId");
+            }
+
+            var isVersionInUse = await _cvVersionRepository.IsPreviewFileInUseAsync(
+                validated.PreviewFileId.Value,
+                cancellationToken);
+
+            if (isVersionInUse) {
+                throw CvExceptions.PreviewFileConflict("previewFileId");
+            }
+
+            var isCvInUse = await _cvRepository.IsPreviewFileInUseAsync(
+                validated.PreviewFileId.Value,
+                cv.Id,
+                cancellationToken);
+
+            if (isCvInUse) {
+                throw CvExceptions.PreviewFileConflict("previewFileId");
+            }
+        }
+
+        var title = validated.TitleProvided ? validated.Title! : cv.Title;
+        var titleChanged = !string.Equals(title, cv.Title, StringComparison.Ordinal);
+        var visibilityChanged = isPublic != cv.IsPublic;
+        var previewChanged = validated.PreviewFileIdProvided && validated.PreviewFileId != oldPreviewFileId;
+
+        CvPreviewFileResult? previewFileResult = validated.PreviewFileIdProvided
+            ? (newPreviewFile is not null ? new CvPreviewFileResult(newPreviewFile.Id, newPreviewFile.FileUrl) : null)
+            : (cv.PreviewFile is not null ? new CvPreviewFileResult(cv.PreviewFile.Id, cv.PreviewFile.FileUrl) : null);
+
+        try {
+            if (isVersioningRequired) {
+                var latestVersionNumber = await _cvVersionRepository.GetLatestVersionNumberAsync(
+                    cv.Id,
+                    cancellationToken
+                );
+                if (latestVersionNumber == int.MaxValue) {
+                    throw CvExceptions.CvUpdateConflict();
+                }
+                
+                var result = await HandleUpdateWithVersioning(
+                    cv,
+                    latestVersionNumber,
+                    previewFileResult,
+                    () => {
+                        cv.Update(title, isPublic, now);
+                        if (validated.PreviewFileIdProvided) {
+                            cv.SetPreviewFile(validated.PreviewFileId);
+                        }
+
+                        cv.UpdateDocuments(
+                            content,
+                            layout,
+                            language,
+                            latestVersionNumber,
+                            now);
+
+                        // Hash again because the updated documents modified version.
+                        var updatedHashes = _cvDocumentHasher.Calculate(
+                            cv.Content,
+                            cv.Layout);
+                        cv.SetDocumentHashes(
+                            updatedHashes.ContentHash,
+                            updatedHashes.LayoutHash);
+                    },
+                    now,
+                    cancellationToken);
+
+                return result;
+            }
+            else {
+                return await HandlerSimpleUpdate(
+                    cv,
+                    () => {
+                        if (titleChanged || visibilityChanged) {
+                            cv.Update(title, isPublic, now);
+                        }
+
+                        if (previewChanged) {
+                            cv.SetPreviewFile(validated.PreviewFileId);
+                        }
+                        
+                        cv.SetDocumentHashes(
+                            proposedHashes.ContentHash,
+                            proposedHashes.LayoutHash);
+                    },
+                    previewFileResult,
+                    cancellationToken
+                );
+            }
+        }
+        catch (PersistenceUniqueConstraintViolationException exception) when (
+            string.Equals(
+                exception.ConstraintName,
+                "ix_cv_versions_preview_file_id",
+                StringComparison.OrdinalIgnoreCase)) {
+            throw CvExceptions.PreviewFileConflict("previewFileId");
+        }
+        catch (OptimisticConcurrencyException) {
+            throw CvExceptions.CvUpdateConflict();
+        }
+    }
+    
+    private async Task<CvResult> HandlerSimpleUpdate(
+        Domain.Entities.Cv cv,
+        Action updateAction,
+        CvPreviewFileResult? previewFileOverride,
+        CancellationToken cancellationToken
+    ) {
+        updateAction();
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+        
+        return CvResultMapper.ToResult(cv, cv.Template, previewFileOverride);
+    }
+    
+    private async Task<CvResult> HandleUpdateWithVersioning(
+        Domain.Entities.Cv cv,
+        int latestVersionNumber,
+        CvPreviewFileResult? previewFileOverride,
+        Action updateAction,
+        DateTimeOffset now,
+        CancellationToken cancellationToken
+    ) {
+        var newVersionNumber = latestVersionNumber + 1;
+        
+        updateAction();
+        
+        var version = cv.CreateVersion(newVersionNumber, now);
+        
+        await _cvVersionRepository.Add(version);
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+        
+        return CvResultMapper.ToResult(cv, cv.Template, previewFileOverride);
+    }
+    
+    private Guid GetCandidateId() {
+        if (_currentUser.UserId is not Guid candidateId) {
+            throw CvExceptions.InvalidAccessToken(
+                "The access token does not contain a valid user id.");
+        }
+        
+        if (!_currentUser.Roles.Contains(RoleNames.Candidate)) {
+            throw CvExceptions.CandidateRoleRequired("update");
+        }
+        
+        return candidateId;
+    }
+}
